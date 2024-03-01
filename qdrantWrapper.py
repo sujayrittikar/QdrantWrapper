@@ -6,17 +6,32 @@
 from typing import List, Optional, Sequence, Tuple, Union
 from qdrant_client import QdrantClient
 from qdrant_client.conversions import common_types as types
-from qdrant_client.http.models import Distance, VectorParams
-from qdrant_client.http.exceptions import UnexpectedResponse
-from qdrantWrapperExceptions import CollectionNameNotProvidedException, CollectionAlreadyExistsException
-from qdrant_client.http.models import Filter, FieldCondition, Range
+from qdrant_client.http.models import (
+    Distance, VectorParams, Filter, FieldCondition, Range, PointStruct
+)
+from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
+from qdrantWrapperExceptions import (
+    CollectionNameNotProvidedException, CollectionAlreadyExistsException, ClientConnectionException
+)
 
 
 class QdrantWrapper:
+    '''
+        Wrapper around the Qdrant client to make it easier to use
+
+        Args:
+            cluster_url (str): Qdrant cluster url
+            api_key (str): Qdrant api key
+            distance (Distance, optional): Distance metric. Defaults to Distance.DOT.
+            vector_size (int, optional): Size of the vector. Defaults to 1536.
+            collection_name (str, optional): Name of the collection. Defaults to None.
+            print_logs (bool, optional): Whether to print logs. Defaults to False.
+    '''
     def __init__(
             self,
             cluster_url: str,
-            api_key: str,
+            port: int = None,
+            api_key: str = None,
             distance = Distance.DOT,
             vector_size: int = 1536,
             collection_name: str = None,
@@ -32,12 +47,23 @@ class QdrantWrapper:
         '''
         self.distance = distance
         self.vector_size = vector_size
-        self.qdrant_client = QdrantClient(url=cluster_url, api_key=api_key)
+        if port:
+            self.qdrant_client = QdrantClient(url=cluster_url, port=port)
+        elif api_key:
+            self.qdrant_client = QdrantClient(url=cluster_url, api_key=api_key)
+        else:
+            raise ClientConnectionException("Either port or api_key should be provided")
         self.collection_name = collection_name
         self.print_logs = print_logs
 
 
-    def create_collection(self, collection_name: str, set_collection_name=True) -> None:
+    def create_collection(
+            self,
+            collection_name: str,
+            distance= Distance.COSINE,
+            vector_size=1536,
+            set_collection_name=True
+        ) -> None:
         '''
             Create a collection in Qdrant
 
@@ -51,7 +77,7 @@ class QdrantWrapper:
         try:
             self.qdrant_client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=self.vector_size, distance=self.distance),
+                vectors_config=VectorParams(size=vector_size, distance=distance),
             )
         except UnexpectedResponse:
             raise CollectionAlreadyExistsException("Collection already exists in the DB.")
@@ -101,7 +127,7 @@ class QdrantWrapper:
             pointStructs: types.Points,
             batch_size: int = 50,
             collection_name: str = None
-    ) -> None:
+    ) -> list:
         '''
             Upsert data into the collection in batches
 
@@ -113,14 +139,37 @@ class QdrantWrapper:
             Raises:
                 CollectionNameNotProvidedException: Collection name not provided
         '''
+        upserted_ids = []
         if collection_name:
             for i in range(0, len(pointStructs), batch_size):
                 points_batch = pointStructs[i:i+batch_size]
-                self.upsert_data(points_batch, collection_name)
+                try:
+                    self.upsert_data(points_batch, collection_name)
+                    upserted_ids.extend([point.id for point in points_batch])
+                except ResponseHandlingException:
+                    print(f"Failed to upsert batch {i} to {i+batch_size}. Retrying...")
+                    try:
+                        self.upsert_data(points_batch, collection_name)
+                        upserted_ids.extend([point.id for point in points_batch])
+                    except ResponseHandlingException:
+                        print(f"Failed to upsert batch {i} to {i+batch_size} again...")
+                        break
+            return upserted_ids
         elif self.collection_name:
             for i in range(0, len(pointStructs), batch_size):
                 points_batch = pointStructs[i:i+batch_size]
-                self.upsert_data(points_batch, self.collection_name)
+                try:
+                    self.upsert_data(points_batch, self.collection_name)
+                    upserted_ids.extend([point.id for point in points_batch])
+                except ResponseHandlingException:
+                    print(f"Failed to upsert batch {i} to {i+batch_size}. Retrying...")
+                    try:
+                        self.upsert_data(points_batch, self.collection_name)
+                        upserted_ids.extend([point.id for point in points_batch])
+                    except ResponseHandlingException:
+                        print(f"Failed to upsert batch {i} to {i+batch_size} again. Skipping...")
+                        break
+            return upserted_ids
         else:
             raise CollectionNameNotProvidedException("Collection name not provided")
 
@@ -177,12 +226,14 @@ class QdrantWrapper:
         '''
         if collection_name:
             self.qdrant_client.delete_collection(collection_name=collection_name)
+            if self.print_logs:
+                print(f"Collection {collection_name} deleted successfully")
         elif self.collection_name:
             self.qdrant_client.delete_collection(collection_name=self.collection_name)
+            if self.print_logs:
+                print(f"Collection {self.collection_name} deleted successfully")
         else:
             raise CollectionNameNotProvidedException("Collection name not provided")
-        if self.print_logs:
-            print(f"Collection {collection_name} deleted successfully")
         self.collection_name = None
 
 
