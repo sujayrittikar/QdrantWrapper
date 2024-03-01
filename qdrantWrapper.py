@@ -258,3 +258,24 @@ class QdrantWrapper:
 
         if self.print_logs:
             print(f"Data deleted successfully")
+
+
+    def create_meta_index(
+        self,
+        field_name: str,
+        field_type: str
+    ):
+        '''
+            Create a meta index in the collection
+
+            Args:
+                filed_name (str): Name of the field
+                field_type (str): Type of the field
+        '''
+        self.qdrant_client.create_payload_index(
+            collection_name=self.collection_name,
+            field_name=field_name,
+            field_type=field_type
+        )
+        if self.print_logs:
+            print(f"{field_name} index created successfully")
