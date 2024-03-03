@@ -11,7 +11,7 @@ from qdrant_client.http.models import (
 )
 from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
 from qdrantWrapperExceptions import (
-    CollectionNameNotProvidedException, CollectionAlreadyExistsException, ClientConnectionException
+    ClientConnectionException, CollectionAlreadyExistsException, CollectionNameNotProvidedException
 )
 
 
@@ -200,18 +200,45 @@ class QdrantWrapper:
                 list: List of search results
         '''
         if collection_name:
-            search_result = self.qdrant_client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=limit,
-                query_filter=query_filter
-            )
+            try:
+                search_result = self.qdrant_client.search(
+                    collection_name=collection_name,
+                    query_vector=query_vector,
+                    limit=limit,
+                    query_filter=query_filter
+                )
+            except (ResponseHandlingException, UnexpectedResponse):
+                print(f"Failed to search in collection {collection_name}. Retrying...")
+                try:
+                    search_result = self.qdrant_client.search(
+                        collection_name=collection_name,
+                        query_vector=query_vector,
+                        limit=limit,
+                        query_filter=query_filter
+                    )
+                except (ResponseHandlingException, UnexpectedResponse):
+                    print(f"Failed to search in collection {collection_name} again...")
+                    return []
         elif self.collection_name:
-            search_result = self.qdrant_client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit
-            )
+            try:
+                search_result = self.qdrant_client.search(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    limit=limit,
+                    query_filter=query_filter
+                )
+            except (ResponseHandlingException, UnexpectedResponse):
+                print(f"Failed to search in collection {self.collection_name}. Retrying...")
+                try:
+                    search_result = self.qdrant_client.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_vector,
+                        limit=limit,
+                        query_filter=query_filter
+                    )
+                except (ResponseHandlingException, UnexpectedResponse):
+                    print(f"Failed to search in collection {self.collection_name} again...")
+                    return []
         else:
             raise CollectionNameNotProvidedException("Collection name not provided")
         return search_result
@@ -279,3 +306,4 @@ class QdrantWrapper:
         )
         if self.print_logs:
             print(f"{field_name} index created successfully")
+
