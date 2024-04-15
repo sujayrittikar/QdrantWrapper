@@ -3,7 +3,7 @@
     It provides methods to create a collection, upsert data, upsert data in batches and search for similar vectors.
 '''
 
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 from qdrant_client import QdrantClient
 from qdrant_client.conversions import common_types as types
 from qdrant_client.http.models import (
@@ -35,7 +35,8 @@ class QdrantWrapper:
             distance = Distance.DOT,
             vector_size: int = 1536,
             collection_name: str = None,
-            print_logs: bool = False
+            print_logs: bool = False,
+            logger_fn: Optional[Callable] = print
         ) -> None:
         '''
             Args:
@@ -55,6 +56,7 @@ class QdrantWrapper:
             raise ClientConnectionException("Either port or api_key should be provided")
         self.collection_name = collection_name
         self.print_logs = print_logs
+        self.logger_fn = logger_fn
 
 
     def create_collection(
@@ -84,7 +86,8 @@ class QdrantWrapper:
         if set_collection_name:
             self.collection_name = collection_name
         if self.print_logs:
-            print(f"Collection {collection_name} created successfully")
+            self.logger_fn(
+                f"QdrantWrapper: Collection {collection_name} created successfully")
 
     
     def upsert_data(
@@ -118,8 +121,8 @@ class QdrantWrapper:
             raise CollectionNameNotProvidedException("Collection name not provided")
 
         if self.print_logs:
-            print(operation_info)
-            print(f"Upserted {len(pointStructs)} points successfully")
+            self.logger_fn(str(operation_info))
+            self.logger_fn(f"QdrantWrapper: Upserted {len(pointStructs)} points successfully",)
 
 
     def upsert_data_batches(
@@ -147,12 +150,12 @@ class QdrantWrapper:
                     self.upsert_data(points_batch, collection_name)
                     upserted_ids.extend([point.id for point in points_batch])
                 except ResponseHandlingException:
-                    print(f"Failed to upsert batch {i} to {i+batch_size}. Retrying...")
+                    self.logger_fn(f"QdraantWrapper: Failed to upsert batch {i} to {i+batch_size}. Retrying...")
                     try:
                         self.upsert_data(points_batch, collection_name)
                         upserted_ids.extend([point.id for point in points_batch])
                     except ResponseHandlingException:
-                        print(f"Failed to upsert batch {i} to {i+batch_size} again...")
+                        self.logger_fn(f"QdrantWrapper: Failed to upsert batch {i} to {i+batch_size} again...",)
                         break
             return upserted_ids
         elif self.collection_name:
@@ -162,12 +165,12 @@ class QdrantWrapper:
                     self.upsert_data(points_batch, self.collection_name)
                     upserted_ids.extend([point.id for point in points_batch])
                 except ResponseHandlingException:
-                    print(f"Failed to upsert batch {i} to {i+batch_size}. Retrying...")
+                    self.logger_fn(f"QdrantWrapper: Failed to upsert batch {i} to {i+batch_size}. Retrying...")
                     try:
                         self.upsert_data(points_batch, self.collection_name)
                         upserted_ids.extend([point.id for point in points_batch])
                     except ResponseHandlingException:
-                        print(f"Failed to upsert batch {i} to {i+batch_size} again. Skipping...")
+                        self.logger_fn(f"QdrantWrapper: Failed to upsert batch {i} to {i+batch_size} again...",)
                         break
             return upserted_ids
         else:
@@ -185,7 +188,9 @@ class QdrantWrapper:
             ],
             limit=10,
             query_filter: Optional[types.Filter] = None,
-            collection_name: str = None
+            collection_name: str = None,
+            with_vectors: bool = False,
+            score_threshold: float = 0.0
         ) -> list:
         '''
             Search for similar vectors in the collection
@@ -205,19 +210,23 @@ class QdrantWrapper:
                     collection_name=collection_name,
                     query_vector=query_vector,
                     limit=limit,
-                    query_filter=query_filter
+                    query_filter=query_filter,
+                    with_vectors=with_vectors,
+                    score_threshold=score_threshold
                 )
             except (ResponseHandlingException, UnexpectedResponse):
-                print(f"Failed to search in collection {collection_name}. Retrying...")
+                self.logger_fn(f"QdrantWrapper: Failed to search in collection {collection_name}. Retrying...",)
                 try:
                     search_result = self.qdrant_client.search(
                         collection_name=collection_name,
                         query_vector=query_vector,
                         limit=limit,
-                        query_filter=query_filter
+                        query_filter=query_filter,
+                        with_vectors=with_vectors,
+                        score_threshold=score_threshold
                     )
                 except (ResponseHandlingException, UnexpectedResponse):
-                    print(f"Failed to search in collection {collection_name} again...")
+                    self.logger_fn(f"QdrantWrapper: Failed to search in collection {collection_name} again...")
                     return []
         elif self.collection_name:
             try:
@@ -228,7 +237,7 @@ class QdrantWrapper:
                     query_filter=query_filter
                 )
             except (ResponseHandlingException, UnexpectedResponse):
-                print(f"Failed to search in collection {self.collection_name}. Retrying...")
+                self.logger_fn(f"QdrantWrapper: Failed to search in collection {self.collection_name}. Retrying...")
                 try:
                     search_result = self.qdrant_client.search(
                         collection_name=self.collection_name,
@@ -237,11 +246,57 @@ class QdrantWrapper:
                         query_filter=query_filter
                     )
                 except (ResponseHandlingException, UnexpectedResponse):
-                    print(f"Failed to search in collection {self.collection_name} again...")
+                    self.logger_fn(f"QdrantWrapper: Failed to search in collection {self.collection_name} again...")
                     return []
         else:
             raise CollectionNameNotProvidedException("Collection name not provided")
         return search_result
+
+
+    def filter_search(
+        self,
+        scroll_filter: types.Filter,
+        collection_name: str = None,
+        limit: int = 10,
+        with_vectors=False
+    ) -> Tuple[List[types.Record], Optional[types.PointId]]:
+        '''
+            Filter search in the collection
+
+            Args:
+                scroll_filter (types.Filter): Filter to search
+                collection_name (str, optional): Name of the collection. Defaults to None.
+
+            Returns:
+                Tuple[List[types.Record], Optional[types.PointId]]: List of records and next scroll id
+        '''
+        if collection_name:
+            filtered_points = self.qdrant_client.scroll(
+                collection_name=collection_name,
+                scroll_filter=scroll_filter,
+                limit=limit,
+                with_vectors=with_vectors
+            )
+        elif self.collection_name:
+            filtered_points = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=scroll_filter,
+                limit=limit,
+                with_vectors=with_vectors
+            )
+        else:
+            raise CollectionNameNotProvidedException("Collection name not provided")
+        return filtered_points
+
+
+    def batched_filter_search(
+        self,
+        filters_list: List[types.Filter],
+        collection_name: str = None,
+        batch_size: int = 10,
+        filter_type: str = "should",
+    ):
+        pass
 
 
     def delete_collection(self, collection_name: str = None) -> None:
@@ -254,11 +309,11 @@ class QdrantWrapper:
         if collection_name:
             self.qdrant_client.delete_collection(collection_name=collection_name)
             if self.print_logs:
-                print(f"Collection {collection_name} deleted successfully")
+                self.logger_fn(f"QdrantWrapper: Collection {collection_name} deleted successfully")
         elif self.collection_name:
             self.qdrant_client.delete_collection(collection_name=self.collection_name)
             if self.print_logs:
-                print(f"Collection {self.collection_name} deleted successfully")
+                self.logger_fn(f"QdrantWrapper: Collection {self.collection_name} deleted successfully")
         else:
             raise CollectionNameNotProvidedException("Collection name not provided")
         self.collection_name = None
@@ -284,7 +339,7 @@ class QdrantWrapper:
             raise CollectionNameNotProvidedException("Collection name not provided")
 
         if self.print_logs:
-            print(f"Data deleted successfully")
+            self.logger_fn(f"QdrantWrapper: Data deleted successfully")
 
 
     def create_meta_index(
@@ -305,5 +360,5 @@ class QdrantWrapper:
             field_type=field_type
         )
         if self.print_logs:
-            print(f"{field_name} index created successfully")
+            self.logger_fn(f"QdrantWrapper: {field_name} index created successfully",)
 
