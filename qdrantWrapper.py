@@ -4,13 +4,13 @@
 '''
 
 from typing import Callable, List, Optional, Sequence, Tuple, Union
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.conversions import common_types as types
 from qdrant_client.http.models import (
     Distance, VectorParams, Filter, FieldCondition, Range, PointStruct
 )
 from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
-from qdrantWrapperExceptions import (
+from QdrantWrapper.qdrantWrapperExceptions import (
     ClientConnectionException, CollectionAlreadyExistsException, CollectionNameNotProvidedException
 )
 
